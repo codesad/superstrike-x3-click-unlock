@@ -141,7 +141,7 @@ PACKETS = tuple(
 LOGITECH_VENDOR_ID = 0x046D
 ANY_PRODUCT_ID = 0x0000
 SUPERSTRIKE_RECEIVER_PRODUCT_IDS = (0xC54D, 0xC54F, 0xAB24)
-HIDPP_USAGE_PAGE = 0xFF00
+HIDPP_USAGE_PAGES = (0xFF00, 0xFF43)
 HID_DESCRIPTOR_REPORT_ID_TAG = 0x85
 EXPECTED_HIDPP_INTERFACE_COUNT = 1
 
@@ -267,7 +267,7 @@ def open_receiver():
             "hidapi is required: python -m pip install hidapi"
         ) from error
 
-    candidates = []
+    candidates_by_path = {}
     seen = []
     open_errors = []
     report_id_item = bytes((HID_DESCRIPTOR_REPORT_ID_TAG, HIDPP_LONG_REPORT_ID))
@@ -277,6 +277,7 @@ def open_receiver():
             {
                 "product_id": f"{product_id:04x}",
                 "usage_page": f"{int(info.get('usage_page') or 0):04x}",
+                "usage": f"{int(info.get('usage') or 0):04x}",
                 "interface_number": info.get("interface_number"),
                 "product_string": info.get("product_string"),
             }
@@ -284,19 +285,20 @@ def open_receiver():
         if product_id not in SUPERSTRIKE_RECEIVER_PRODUCT_IDS:
             continue
         usage_page = int(info.get("usage_page") or 0)
-        if usage_page not in (0, HIDPP_USAGE_PAGE):
+        if usage_page != 0 and usage_page not in HIDPP_USAGE_PAGES:
             continue
         device = hid.device()
         try:
             device.open_path(info["path"])
             descriptor = bytes(device.get_report_descriptor())
             if report_id_item in descriptor:
-                candidates.append(info)
+                candidates_by_path[info["path"]] = info
         except OSError as error:
             open_errors.append(str(error))
         finally:
             device.close()
 
+    candidates = list(candidates_by_path.values())
     if len(candidates) != EXPECTED_HIDPP_INTERFACE_COUNT:
         details = f" Logitech HID interfaces: {seen}."
         if open_errors:
