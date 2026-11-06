@@ -23,6 +23,11 @@ python main.py
 > This has only been tested on firmware version `AM 1.2.0015` for the Superstrike X3.
 > It is also 101% not going to work on any other combination without targeted changes.
 
+> [!NOTE]
+> Device discovery on Windows is currently untested, but it should work.
+> If discovery fails, the script exits before touching the mouse, so you
+> don't have to worry about things breaking.
+
 ## How it works
 
 The mouse has its own firmware updater, and that updater has an integer overflow
