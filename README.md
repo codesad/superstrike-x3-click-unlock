@@ -12,10 +12,10 @@ Especially useful for Minecraft and drag clicking in general.
 
 - Superstrike X3 running firmware `AM 1.2.0015`
 - Python 3
-- [`hidapi`](https://pypi.org/project/hidapi/)
+- [`hidapi`](https://pypi.org/project/hidapi/) 0.15.0 or newer
 
 ```bash
-python -m pip install hidapi
+python -m pip install "hidapi>=0.15.0"
 python main.py
 ```
 

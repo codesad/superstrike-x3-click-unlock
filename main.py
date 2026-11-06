@@ -4,7 +4,7 @@ a script that removes the software imposed CPS limit of the Superstrike X3
 before: a minimum of 50ms between clicks, making drag clicking not worth it
 after: a minimum of ~10ms
 
-requires the hidapi package: python -m pip install hidapi
+requires hidapi 0.15.0 or newer: python -m pip install "hidapi>=0.15.0"
 
 !! this has only been tested on firmware version 'AM 1.2.0015' for the Superstrike X3
 !! it's also 101% not going to work on any other combination without targetted changes.
@@ -22,7 +22,7 @@ overflow, both the bounds-check sum and the destination address wrap around, so
 we can write to RAM anywhere (albeit sequentially) and point the record at the TCM 
 where the active mouse handling is running.
 
-since we only get one continuous write we put the 32-byte wrapper over the beginning
+since we only get one continuous write we put a wrapper over the beginning
 of the HITS host-command handler at 0x22005b2c, copy the original bytes between
 that address and the live sensor callback, and install the callback hook at
 0x22005ea4 in the final packet.
@@ -58,7 +58,12 @@ PACKETS = tuple(
         # 0x22005b2c. that is where we start writing
         "02f30004a80cfffb5900000000000000",
 
-        # packets 5-6: this is the whole wrapper
+        # packets 5-8: this is the whole wrapper
+        #     ldr r3, =0x22005ea9      # return address when the sensor callback called us
+        #     cmp lr, r3
+        #     bne hits_command         # a different return address means setConfig called us
+        #
+        # sensor_callback:
         #     ldr r2, =0x2f003e3c      # where live Quiver keeps its config pointer
         #     ldr r3, =0x0e0bd758      # zero timing table
         #     str r3, [r2]
@@ -68,14 +73,20 @@ PACKETS = tuple(
         #     ldr r3, =0x22005ec1      # logitech's original handler (see packet 60)
         #                              # has +1 because we run as Thumb code
         #     bx r3                    # jump into it and let it return normally
-        "034a044b1360044a00231380034b1847",
+        #
+        # hits_command:
+        # RDFU cleanup path
+        #     ldr r0, =0x2f004e10      # reset takes the live RDFU object as argument 1
+        #     ldr r3, =0x0e0b507d      # put the reset address in r3 so bx can jump to it
+        #     bx r3                    # reset RDFU and let it return through existing lr
+        "064b9e4507d1064a064b1360064a0023",
+        "1380064b18470648064b1847a95e0022",
         "3c3e002f58d70b0e5456002fc15e0022",
+        "104e002f7d500b0e2350002dfbd102a8",
 
-        # packets 7-59: unrelated bytes. since we can't jump over this area
+        # packets 9-59: unrelated bytes. since we can't jump over this area
         # we have to write through it. these are the original bytes here
         # so nothing changes
-        "a3a3a36ea3a3a50001f092f803784268",
-        "029003f5807352f82350002dfbd102a8",
         "01f011f902a90522304602958df80c50",
         "01f04af99df808309df80910644a6548",
         "d1549df80a10644ad1549df80b10634a",
@@ -264,7 +275,8 @@ def open_receiver():
         import hid
     except ImportError as error:
         raise RuntimeError(
-            "hidapi is required: python -m pip install hidapi"
+            "hidapi 0.15.0 or newer is required: "
+            'python -m pip install "hidapi>=0.15.0"'
         ) from error
 
     candidates_by_path = {}
@@ -565,6 +577,34 @@ def main():
                 and reply_ack == number
             ):
                 raise RuntimeError(f"bad RDFU ACK for packet {number}: {reply.hex()}")
+
+        cleanup_trigger = bytes((HITS_LEFT_BUTTON, HITS_ACTUATION_1_RAW,
+                                 HITS_RAPID_TRIGGER_1_ON_RAW, HITS_HAPTICS_1_RAW))
+        try:
+            exchange(device, hits, HITS_SET_CONFIG, cleanup_trigger)
+        except (RuntimeError, TimeoutError):
+            pass
+
+        # setConfig returns immediately, so the HITS worker could still be running cleanup
+        # we poll until it finishes or the normal req timeout expires
+        cleanup_deadline = time.monotonic() + REQUEST_TIMEOUT_SECONDS
+        expected_status = bytes((TARGET_APPLICATION_ENTITY, RDFU_DFU_NOT_STARTED))
+        while True:
+            cleanup_status = exchange(
+                device,
+                rdfu,
+                RDFU_GET_STATUS,
+                bytes((TARGET_APPLICATION_ENTITY,)),
+                software=RDFU_SOFTWARE_ID,
+                match=False,
+            )
+            if cleanup_status[RDFU_REPLY_ENTITY_BYTE:RDFU_REPLY_STATUS_BYTE + 1] == expected_status:
+                break
+            if time.monotonic() >= cleanup_deadline:
+                raise RuntimeError(
+                    "RDFU cleanup did not return the updater to not-started: "
+                    f"{cleanup_status.hex()}"
+                )
     except Exception:
         if sent:
             print("patch transmission has partially gone through, so cold reboot before retrying.")
