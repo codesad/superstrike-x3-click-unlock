@@ -195,6 +195,7 @@ FEATURE_ID_LENGTH = 2
 ROOT_GET_FEATURE = 0
 FIRMWARE_GET_ENTITY_COUNT = 0
 FIRMWARE_GET_ENTITY_INFO = 1
+RDFU_START_DFU = 1
 RDFU_GET_STATUS = 2
 RDFU_TRANSFER_DATA = 4
 HITS_SET_CONFIG = 1
@@ -214,9 +215,13 @@ ENTITY_ACTIVE_FLAG = 1
 FIRMWARE_ENTITY_COUNT_BYTE = HIDPP_PARAMETERS_BYTE
 FIRMWARE_ENTITY_BODY = HIDPP_PARAMETERS
 
+RDFU_DFU_NOT_STARTED = 1
 RDFU_DATA_TRANSFER_READY = 2
 RDFU_PACKET_ACK = 6
+RDFU_INITIAL_BLOCK = 0
 RDFU_EXPECTED_BLOCK = 1
+RDFU_START_MAGIC = bytes.fromhex("414d315f443100000000")
+RDFU_BLOCK_ZERO_HEADER = bytes.fromhex("06000000000000100000000000000000")
 RDFU_REPLY_ENTITY_BYTE = 4
 RDFU_REPLY_STATUS_BYTE = 5
 RDFU_REPLY_PARAMETERS_BYTE = 6
@@ -251,6 +256,7 @@ FIRST_PACKET_NUMBER = 1
 
 assert len(PACKETS) == PATCH_PACKET_COUNT
 assert all(len(packet) == RDFU_PACKET_LENGTH for packet in PACKETS)
+assert len(RDFU_BLOCK_ZERO_HEADER) == RDFU_PACKET_LENGTH
 
 
 def open_receiver():
@@ -430,6 +436,7 @@ def main():
             bytes((TARGET_APPLICATION_ENTITY,)),
             software=RDFU_SOFTWARE_ID,
             match=False,
+            drain=True,
         )
         status_entity = status[RDFU_REPLY_ENTITY_BYTE]
         status_code = status[RDFU_REPLY_STATUS_BYTE]
@@ -437,12 +444,25 @@ def main():
             status[RDFU_REPLY_BLOCK],
             PROTOCOL_BYTE_ORDER,
         )
-        if not (
+        rdfu_not_started = (
+            status_entity == TARGET_APPLICATION_ENTITY
+            and status_code == RDFU_DFU_NOT_STARTED
+        )
+        rdfu_ready_block_zero = (
+            status_entity == TARGET_APPLICATION_ENTITY
+            and status_code == RDFU_DATA_TRANSFER_READY
+            and status_block == RDFU_INITIAL_BLOCK
+        )
+        rdfu_ready_block_one = (
             status_entity == TARGET_APPLICATION_ENTITY
             and status_code == RDFU_DATA_TRANSFER_READY
             and status_block == RDFU_EXPECTED_BLOCK
-        ):
-            raise RuntimeError(f"RDFU is not at entity 3 block 1 checkpoint: {status.hex()}")
+        )
+        if not (rdfu_not_started or rdfu_ready_block_zero or rdfu_ready_block_one):
+            raise RuntimeError(
+                "RDFU is not stopped or waiting at block 0/1: "
+                f"{status.hex()}"
+            )
 
         # set 1/1/1 before patching and confirm it's set
         for button in HITS_BUTTONS:
@@ -470,6 +490,58 @@ def main():
         monitoring_flags = monitoring_reply[HITS_MONITORING_FLAGS_BYTE]
         if monitoring_flags & HITS_MONITORING_MASK:
             raise RuntimeError("disable HITS monitoring before patching (cold reboot)")
+
+        if rdfu_not_started:
+            start_reply = exchange(
+                device,
+                rdfu,
+                RDFU_START_DFU,
+                bytes((TARGET_APPLICATION_ENTITY,)) + RDFU_START_MAGIC,
+                software=RDFU_SOFTWARE_ID,
+                match=False,
+                drain=True,
+            )
+            start_entity = start_reply[RDFU_REPLY_ENTITY_BYTE]
+            start_status = start_reply[RDFU_REPLY_STATUS_BYTE]
+            start_block = int.from_bytes(
+                start_reply[RDFU_REPLY_BLOCK],
+                PROTOCOL_BYTE_ORDER,
+            )
+            if not (
+                start_entity == TARGET_APPLICATION_ENTITY
+                and start_status == RDFU_DATA_TRANSFER_READY
+                and start_block == RDFU_INITIAL_BLOCK
+            ):
+                raise RuntimeError(
+                    f"RDFU did not start at block 0: {start_reply.hex()}"
+                )
+            rdfu_ready_block_zero = True
+
+        if rdfu_ready_block_zero:
+            block_zero_reply = exchange(
+                device,
+                rdfu,
+                RDFU_TRANSFER_DATA,
+                RDFU_BLOCK_ZERO_HEADER,
+                software=RDFU_SOFTWARE_ID,
+                match=False,
+                drain=True,
+            )
+            block_zero_entity = block_zero_reply[RDFU_REPLY_ENTITY_BYTE]
+            block_zero_status = block_zero_reply[RDFU_REPLY_STATUS_BYTE]
+            next_block = int.from_bytes(
+                block_zero_reply[RDFU_REPLY_BLOCK],
+                PROTOCOL_BYTE_ORDER,
+            )
+            if not (
+                block_zero_entity == TARGET_APPLICATION_ENTITY
+                and block_zero_status == RDFU_DATA_TRANSFER_READY
+                and next_block == RDFU_EXPECTED_BLOCK
+            ):
+                raise RuntimeError(
+                    "RDFU block-0 header did not advance to block 1: "
+                    f"{block_zero_reply.hex()}"
+                )
 
         for number, packet in enumerate(PACKETS, FIRST_PACKET_NUMBER):
             reply = exchange(
