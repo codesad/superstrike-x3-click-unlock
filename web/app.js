@@ -1,3 +1,5 @@
+/* AI-assisted port of the Python script because I ain't rewriting all at in js */
+
 const LOGITECH_VENDOR_ID = 0x046d;
 const RECEIVER_PRODUCT_IDS = [0xc54d, 0xc54f, 0xab24];
 const HIDPP_USAGE_PAGES = [0xff00, 0xff43];
@@ -36,8 +38,7 @@ const HITS_SET_CONFIG = 1;
 const HITS_GET_CONFIG = 2;
 const HITS_GET_MONITORING = 4;
 
-const TARGET_APPLICATION_ENTITY = 3;
-const ACTIVE_APPLICATION_ENTITY = 4;
+const APPLICATION_ENTITIES = [3, 4];
 const APPLICATION_ENTITY_TYPE = 15;
 const APPLICATION_PREFIX = "AM";
 const ACTIVE_VERSION_BYTES = [0x01, 0x02, 0x00, 0x15];
@@ -56,15 +57,15 @@ const HITS_RAPID_TRIGGER_1_ON_RAW = 5;
 const HITS_HAPTICS_1_RAW = 4;
 const HITS_MONITORING_MASK = 0x03;
 
-const PATCH_PACKET_HEX = [
+const PACKET_TEMPLATE_HEX = [
   "06000100002050000000000000000000",
-  "010e041ff00000001000000000000000",
+  null,
   "00000000000000000000000000000000",
   "02f30004a80cfffb5900000000000000",
   "064b9e4507d1064a064b1360064a0023",
   "1380064b18470648064b1847a95e0022",
-  "3c3e002f58d70b0e5456002fc15e0022",
-  "104e002f7d500b0e2350002dfbd102a8",
+  null,
+  null,
   "01f011f902a90522304602958df80c50",
   "01f04af99df808309df80910644a6548",
   "d1549df80a10644ad1549df80b10634a",
@@ -92,7 +93,7 @@ const PATCH_PACKET_HEX = [
   "fbf708fb9df80a20144b60695a559df8",
   "0b20134b5a5503689b689847114b43f8",
   "2500bee730469df80920fbf7fffae3e7",
-  "ea0c002f90be0b0ee80c002f5c56002f",
+  null,
   "e60c002f6656002f4254002f4654002f",
   "d60c002f9046002f4054002f5856002f",
   "5656002f8846002f042970b504460dd8",
@@ -102,7 +103,7 @@ const PATCH_PACKET_HEX = [
   "107001f04bfdfff793fc327829780948",
   "fbf7d0fa727869780748fbf7cbfa2069",
   "01f0b8fc0023237670bd00bfe60c002f",
-  "6656002fc89c0b0ea49c0b0e0122084b",
+  null,
   "d3e8ef1f002904d1c3e8ec2fbcf1000f",
   "f6d190f83c3013b1006901f00bbd7047",
   "3446002f10b590f83c30002b29d04ff4",
@@ -111,15 +112,39 @@ const PATCH_PACKET_HEX = [
   "08215b685a640d4b5b685a6891640421",
   "5a68c2f88c405a6891645b680121c3f8",
   "8840006901f0aafc0548fdf7bdf82046",
-  "10bd6ff00400fbe7d4990b0eb0990b0e",
-  "809c0b0e38b590f83c3004460d4613b3",
+  null,
+  null,
   "c36903bb0b79022b20d190f848302bb1",
   "0b6808469b689847002038bd0846faf7",
   "dbf8606903689b68984794f842300146",
   "e06123b929462046fff742feece72046",
 ];
 
-const PATCH_PACKETS = PATCH_PACKET_HEX.map(hexToBytes);
+const SLOT_SPECIFIC_PACKET_NUMBERS = [2, 7, 8, 36, 46, 55, 56];
+
+const ENTITY_4_ACTIVE_PACKETS = [
+  "010e041ff00000001000000000000000",
+  "3c3e002f58d70b0e5456002fc15e0022",
+  "104e002f7d500b0e2350002dfbd102a8",
+  "ea0c002f90be0b0ee80c002f5c56002f",
+  "6656002fc89c0b0ea49c0b0e0122084b",
+  "10bd6ff00400fbe7d4990b0eb0990b0e",
+  "809c0b0e38b590f83c3004460d4613b3",
+].map(hexToBytes);
+
+const ENTITY_3_ACTIVE_PACKETS = [
+  "010e093ff00000001000000000000000",
+  "3c3e002f38b7060e5456002fc15e0022",
+  "104e002f6d30060e2350002dfbd102a8",
+  "ea0c002f709e060ee80c002f5c56002f",
+  "6656002fb07c060e8c7c060e0122084b",
+  "10bd6ff00400fbe7bc79060e9879060e",
+  "687c060e38b590f83c3004460d4613b3",
+].map(hexToBytes);
+
+const PACKET_TEMPLATE = PACKET_TEMPLATE_HEX.map((packet) =>
+  packet === null ? null : hexToBytes(packet)
+);
 
 const actionButton = document.querySelector("#action");
 
@@ -262,6 +287,26 @@ function hexToBytes(value) {
   );
 }
 
+function buildPackets(activeEntity) {
+  let slotPackets;
+  if (activeEntity === 3) {
+    slotPackets = ENTITY_3_ACTIVE_PACKETS;
+  } else if (activeEntity === 4) {
+    slotPackets = ENTITY_4_ACTIVE_PACKETS;
+  } else {
+    throw new Error(`Unsupported active application entity: ${activeEntity}.`);
+  }
+
+  const packets = [...PACKET_TEMPLATE];
+  SLOT_SPECIFIC_PACKET_NUMBERS.forEach((number, index) => {
+    packets[number - 1] = slotPackets[index];
+  });
+  if (packets.some((packet) => packet === null || packet.length !== 16)) {
+    throw new Error("The patch packet list is incomplete.");
+  }
+  return packets;
+}
+
 function bytesToHex(bytes) {
   return [...bytes].map((value) => hex(value, 2)).join("");
 }
@@ -302,12 +347,12 @@ function isHidppInterface(device) {
   });
 }
 
-function parseRdfuStatus(reply) {
+function parseRdfuStatus(reply, targetEntity) {
   const entity = reply[4];
   const code = reply[5];
   const block = (reply[6] << 8) | reply[7];
   const recognized =
-    entity === TARGET_APPLICATION_ENTITY &&
+    entity === targetEntity &&
     (code === RDFU_DFU_NOT_STARTED ||
       (code === RDFU_DATA_TRANSFER_READY &&
         [RDFU_INITIAL_BLOCK, RDFU_EXPECTED_BLOCK].includes(block)));
@@ -327,15 +372,15 @@ async function findFeature(link, featureId) {
   return reply[4];
 }
 
-async function getRdfuStatus(link, rdfuFeature) {
+async function getRdfuStatus(link, rdfuFeature, targetEntity) {
   const reply = await link.exchange(
     rdfuFeature,
     RDFU_GET_STATUS,
-    new Uint8Array([TARGET_APPLICATION_ENTITY]),
+    new Uint8Array([targetEntity]),
     RDFU_SOFTWARE_ID,
     false,
   );
-  return parseRdfuStatus(reply);
+  return parseRdfuStatus(reply, targetEntity);
 }
 
 async function readCompatibility(link) {
@@ -352,17 +397,28 @@ async function readCompatibility(link) {
     throw new Error(`Unexpected firmware entity count: ${entityCount}.`);
   }
 
-  const target = (await link.exchange(
-    firmwareFeature,
-    FIRMWARE_GET_ENTITY_INFO,
-    new Uint8Array([TARGET_APPLICATION_ENTITY]),
-  )).slice(4);
-  const active = (await link.exchange(
-    firmwareFeature,
-    FIRMWARE_GET_ENTITY_INFO,
-    new Uint8Array([ACTIVE_APPLICATION_ENTITY]),
-  )).slice(4);
+  const entries = new Map();
+  for (const entity of APPLICATION_ENTITIES) {
+    const reply = await link.exchange(
+      firmwareFeature,
+      FIRMWARE_GET_ENTITY_INFO,
+      new Uint8Array([entity]),
+    );
+    entries.set(entity, reply.slice(4));
+  }
+
+  const activeEntities = APPLICATION_ENTITIES.filter(
+    (entity) => Boolean(entries.get(entity)[8] & 1),
+  );
+  const activeEntity = activeEntities.length === 1 ? activeEntities[0] : null;
+  const targetEntity = activeEntity === null
+    ? null
+    : APPLICATION_ENTITIES.find((entity) => entity !== activeEntity);
+  const active = activeEntity === null ? null : entries.get(activeEntity);
+  const target = targetEntity === null ? null : entries.get(targetEntity);
   const layoutMatches =
+    active !== null &&
+    target !== null &&
     active[0] === APPLICATION_ENTITY_TYPE &&
     target[0] === APPLICATION_ENTITY_TYPE &&
     String.fromCharCode(active[1], active[2]) === APPLICATION_PREFIX &&
@@ -371,10 +427,14 @@ async function readCompatibility(link) {
     Boolean(active[8] & 1) &&
     !Boolean(target[8] & 1);
 
-  const rdfuState = await getRdfuStatus(link, rdfuFeature);
+  const rdfuState = layoutMatches
+    ? await getRdfuStatus(link, rdfuFeature, targetEntity)
+    : null;
   return {
     compatible: layoutMatches && rdfuState.recognized,
     firmwareSupported: layoutMatches,
+    activeEntity,
+    targetEntity,
     featureIndexes: {
       rdfu: rdfuFeature,
       hits: hitsFeature,
@@ -383,9 +443,9 @@ async function readCompatibility(link) {
   };
 }
 
-function requireRdfuState(state, code, block, message) {
+function requireRdfuState(state, targetEntity, code, block, message) {
   if (
-    state.entity !== TARGET_APPLICATION_ENTITY ||
+    state.entity !== targetEntity ||
     state.code !== code ||
     state.block !== block
   ) {
@@ -400,6 +460,8 @@ async function applyFastClickPatch(link) {
   }
 
   const { rdfu: rdfuFeature, hits: hitsFeature } = preflight.featureIndexes;
+  const { activeEntity, targetEntity } = preflight;
+  const patchPackets = buildPackets(activeEntity);
   for (const button of HITS_BUTTONS) {
     const record = new Uint8Array([
       button,
@@ -439,13 +501,14 @@ async function applyFastClickPatch(link) {
     const startReply = await link.exchange(
       rdfuFeature,
       RDFU_START_DFU,
-      concatBytes(new Uint8Array([TARGET_APPLICATION_ENTITY]), RDFU_START_MAGIC),
+      concatBytes(new Uint8Array([targetEntity]), RDFU_START_MAGIC),
       RDFU_SOFTWARE_ID,
       false,
     );
-    rdfuState = parseRdfuStatus(startReply);
+    rdfuState = parseRdfuStatus(startReply, targetEntity);
     requireRdfuState(
       rdfuState,
+      targetEntity,
       RDFU_DATA_TRANSFER_READY,
       RDFU_INITIAL_BLOCK,
       "RDFU did not start at block 0",
@@ -463,9 +526,10 @@ async function applyFastClickPatch(link) {
       RDFU_SOFTWARE_ID,
       false,
     );
-    rdfuState = parseRdfuStatus(blockZeroReply);
+    rdfuState = parseRdfuStatus(blockZeroReply, targetEntity);
     requireRdfuState(
       rdfuState,
+      targetEntity,
       RDFU_DATA_TRANSFER_READY,
       RDFU_EXPECTED_BLOCK,
       "RDFU block 0 did not advance to block 1",
@@ -474,17 +538,18 @@ async function applyFastClickPatch(link) {
 
   requireRdfuState(
     rdfuState,
+    targetEntity,
     RDFU_DATA_TRANSFER_READY,
     RDFU_EXPECTED_BLOCK,
     "RDFU is not ready for block 1",
   );
 
-  for (let index = 0; index < PATCH_PACKETS.length; index += 1) {
+  for (let index = 0; index < patchPackets.length; index += 1) {
     const number = index + 1;
     const reply = await link.exchange(
       rdfuFeature,
       RDFU_TRANSFER_DATA,
-      PATCH_PACKETS[index],
+      patchPackets[index],
       RDFU_SOFTWARE_ID,
       false,
     );
@@ -496,7 +561,7 @@ async function applyFastClickPatch(link) {
       (reply[8] << 8) +
       reply[9];
     if (
-      replyEntity !== TARGET_APPLICATION_ENTITY ||
+      replyEntity !== targetEntity ||
       replyStatus !== RDFU_PACKET_ACK ||
       replyAck !== number
     ) {
@@ -517,9 +582,9 @@ async function applyFastClickPatch(link) {
   const cleanupDeadline = Date.now() + REQUEST_TIMEOUT_MS;
   let cleanupState;
   while (true) {
-    cleanupState = await getRdfuStatus(link, rdfuFeature);
+    cleanupState = await getRdfuStatus(link, rdfuFeature, targetEntity);
     if (
-      cleanupState.entity === TARGET_APPLICATION_ENTITY &&
+      cleanupState.entity === targetEntity &&
       cleanupState.code === RDFU_DFU_NOT_STARTED
     ) {
       break;
