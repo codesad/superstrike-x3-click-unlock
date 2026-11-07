@@ -41,8 +41,8 @@ with these patches, both software imposed delays are removed.
 
 import time
 
-PACKETS = tuple(
-    bytes.fromhex(packet)
+PACKET_TEMPLATE = tuple(
+    bytes.fromhex(packet) if packet is not None else None
     for packet in (
         # packet 1: declare RDFU block and its total size of 0x2050 bytes.
         "06000100002050000000000000000000",
@@ -50,7 +50,7 @@ PACKETS = tuple(
         # packet 2-3: we start with a type 1 packet that does nothing. the software
         # requires one type 1 packet before sending a type 2 packet,
         # which is what actually changes RAM
-        "010e041ff00000001000000000000000",
+        None,
         "00000000000000000000000000000000",
         
         # packet 4: the type 2 record that triggers the overflow. normally it adds an offset to
@@ -65,7 +65,7 @@ PACKETS = tuple(
         #
         # sensor_callback:
         #     ldr r2, =0x2f003e3c      # where live Quiver keeps its config pointer
-        #     ldr r3, =0x0e0bd758      # zero timing table
+        #     ldr r3, =slot_config     # zero timing table in the active slot
         #     str r3, [r2]
         #     ldr r2, =0x2f005654      # the 2 flags that cause the 10ms ignores
         #     movs r3, #0
@@ -77,12 +77,12 @@ PACKETS = tuple(
         # hits_command:
         # RDFU cleanup path
         #     ldr r0, =0x2f004e10      # reset takes the live RDFU object as argument 1
-        #     ldr r3, =0x0e0b507d      # put the reset address in r3 so bx can jump to it
+        #     ldr r3, =slot_reset + 1  # active slot's reset address in Thumb mode
         #     bx r3                    # reset RDFU and let it return through existing lr
         "064b9e4507d1064a064b1360064a0023",
         "1380064b18470648064b1847a95e0022",
-        "3c3e002f58d70b0e5456002fc15e0022",
-        "104e002f7d500b0e2350002dfbd102a8",
+        None,
+        None,
 
         # packets 9-59: unrelated bytes. since we can't jump over this area
         # we have to write through it. these are the original bytes here
@@ -114,7 +114,7 @@ PACKETS = tuple(
         "fbf708fb9df80a20144b60695a559df8",
         "0b20134b5a5503689b689847114b43f8",
         "2500bee730469df80920fbf7fffae3e7",
-        "ea0c002f90be0b0ee80c002f5c56002f",
+        None,
         "e60c002f6656002f4254002f4654002f",
         "d60c002f9046002f4054002f5856002f",
         "5656002f8846002f042970b504460dd8",
@@ -124,7 +124,7 @@ PACKETS = tuple(
         "107001f04bfdfff793fc327829780948",
         "fbf7d0fa727869780748fbf7cbfa2069",
         "01f0b8fc0023237670bd00bfe60c002f",
-        "6656002fc89c0b0ea49c0b0e0122084b",
+        None,
         "d3e8ef1f002904d1c3e8ec2fbcf1000f",
         "f6d190f83c3013b1006901f00bbd7047",
         "3446002f10b590f83c30002b29d04ff4",
@@ -133,8 +133,8 @@ PACKETS = tuple(
         "08215b685a640d4b5b685a6891640421",
         "5a68c2f88c405a6891645b680121c3f8",
         "8840006901f0aafc0548fdf7bdf82046",
-        "10bd6ff00400fbe7d4990b0eb0990b0e",
-        "809c0b0e38b590f83c3004460d4613b3",
+        None,
+        None,
         "c36903bb0b79022b20d190f848302bb1",
         "0b6808469b689847002038bd0846faf7",
         "dbf8606903689b68984794f842300146",
@@ -149,6 +149,33 @@ PACKETS = tuple(
 )
 
 
+SLOT_SPECIFIC_PACKET_NUMBERS = (2, 7, 8, 36, 46, 55, 56)
+
+ENTITY_4_ACTIVE_PACKETS = tuple(
+    bytes.fromhex(packet)
+    for packet in (
+        "010e041ff00000001000000000000000",  # packet 2: type-1 record for inactive entity 3
+        "3c3e002f58d70b0e5456002fc15e0022",  # packet 7: entity 4 Quiver cfg pointer
+        "104e002f7d500b0e2350002dfbd102a8",  # packet 8: entity 4 RDFU reset pointer
+        "ea0c002f90be0b0ee80c002f5c56002f",  # packet 36: preserved entity-4 flash pointers
+        "6656002fc89c0b0ea49c0b0e0122084b",  # packet 46: preserved entity-4 flash pointers
+        "10bd6ff00400fbe7d4990b0eb0990b0e",  # packet 55: preserved entity-4 flash pointers
+        "809c0b0e38b590f83c3004460d4613b3",  # packet 56: preserved entity-4 flash pointers
+    )
+)
+
+ENTITY_3_ACTIVE_PACKETS = tuple(
+    bytes.fromhex(packet)
+    for packet in (
+        "010e093ff00000001000000000000000",  # packet 2: type-1 record for inactive entity 4
+        "3c3e002f38b7060e5456002fc15e0022",  # packet 7: entity 3 Quiver cfg pointer
+        "104e002f6d30060e2350002dfbd102a8",  # packet 8: entity 3 RDFU reset pointer
+        "ea0c002f709e060ee80c002f5c56002f",  # packet 36: preserved entity-3 flash pointers
+        "6656002fb07c060e8c7c060e0122084b",  # packet 46: preserved entity-3 flash pointers
+        "10bd6ff00400fbe7bc79060e9879060e",  # packet 55: preserved entity-3 flash pointers
+        "687c060e38b590f83c3004460d4613b3",  # packet 56: preserved entity-3 flash pointers
+    )
+)
 LOGITECH_VENDOR_ID = 0x046D
 ANY_PRODUCT_ID = 0x0000
 SUPERSTRIKE_RECEIVER_PRODUCT_IDS = (0xC54D, 0xC54F, 0xAB24)
@@ -213,8 +240,7 @@ HITS_SET_CONFIG = 1
 HITS_GET_CONFIG = 2
 HITS_GET_MONITORING = 4
 
-TARGET_APPLICATION_ENTITY = 3
-ACTIVE_APPLICATION_ENTITY = 4
+APPLICATION_ENTITIES = (3, 4)
 APPLICATION_ENTITY_TYPE = 15
 APPLICATION_PREFIX = b"AM"
 ACTIVE_VERSION_BYTES = bytes.fromhex("01020015")
@@ -265,8 +291,23 @@ PATCH_PACKET_COUNT = 60
 RDFU_PACKET_LENGTH = 16
 FIRST_PACKET_NUMBER = 1
 
-assert len(PACKETS) == PATCH_PACKET_COUNT
-assert all(len(packet) == RDFU_PACKET_LENGTH for packet in PACKETS)
+
+def build_packets(active_entity):
+    slot_packets = {
+        3: ENTITY_3_ACTIVE_PACKETS,
+        4: ENTITY_4_ACTIVE_PACKETS,
+    }[active_entity]
+
+    packets = list(PACKET_TEMPLATE)
+    for number, packet in zip(SLOT_SPECIFIC_PACKET_NUMBERS, slot_packets):
+        packets[number - FIRST_PACKET_NUMBER] = packet
+    return tuple(packets)
+
+
+for active_entity in APPLICATION_ENTITIES:
+    packets = build_packets(active_entity)
+    assert len(packets) == PATCH_PACKET_COUNT
+    assert all(len(packet) == RDFU_PACKET_LENGTH for packet in packets)
 assert len(RDFU_BLOCK_ZERO_HEADER) == RDFU_PACKET_LENGTH
 
 
@@ -429,8 +470,18 @@ def main():
             )[FIRMWARE_ENTITY_BODY]
             for entity in range(entity_count)
         ]
-        active = entries[ACTIVE_APPLICATION_ENTITY]
-        target = entries[TARGET_APPLICATION_ENTITY]
+        active_entities = [
+            entity
+            for entity in APPLICATION_ENTITIES
+            if entries[entity][ENTITY_FLAGS_BYTE] & ENTITY_ACTIVE_FLAG
+        ]
+        if len(active_entities) != 1:
+            raise RuntimeError(f"expected only one active AM application entity, found {active_entities}")
+
+        active_entity = active_entities[0]
+        target_entity = 4 if active_entity == 3 else 3
+        active = entries[active_entity]
+        target = entries[target_entity]
         if not (
             active[ENTITY_TYPE_BYTE]
             == target[ENTITY_TYPE_BYTE]
@@ -440,14 +491,16 @@ def main():
             and active[ENTITY_FLAGS_BYTE] & ENTITY_ACTIVE_FLAG
             and not (target[ENTITY_FLAGS_BYTE] & ENTITY_ACTIVE_FLAG)
         ):
-            raise RuntimeError("wrong firmware or slot layout. expected X3 AM 1.2.0015 with entity 4 active and entity 3 inactive")
+            raise RuntimeError("wrong firmware or slot layout. expected one active X3 AM 1.2.0015")
 
-        # make sure RDFU is waiting at the start of block 1 for inactive entity 3
+        packets = build_packets(active_entity)
+
+        # make sure RDFU is stopped or waiting at block 0/1 for the inactive slot
         status = exchange(
             device,
             rdfu,
             RDFU_GET_STATUS,
-            bytes((TARGET_APPLICATION_ENTITY,)),
+            bytes((target_entity,)),
             software=RDFU_SOFTWARE_ID,
             match=False,
             drain=True,
@@ -459,16 +512,16 @@ def main():
             PROTOCOL_BYTE_ORDER,
         )
         rdfu_not_started = (
-            status_entity == TARGET_APPLICATION_ENTITY
+            status_entity == target_entity
             and status_code == RDFU_DFU_NOT_STARTED
         )
         rdfu_ready_block_zero = (
-            status_entity == TARGET_APPLICATION_ENTITY
+            status_entity == target_entity
             and status_code == RDFU_DATA_TRANSFER_READY
             and status_block == RDFU_INITIAL_BLOCK
         )
         rdfu_ready_block_one = (
-            status_entity == TARGET_APPLICATION_ENTITY
+            status_entity == target_entity
             and status_code == RDFU_DATA_TRANSFER_READY
             and status_block == RDFU_EXPECTED_BLOCK
         )
@@ -510,7 +563,7 @@ def main():
                 device,
                 rdfu,
                 RDFU_START_DFU,
-                bytes((TARGET_APPLICATION_ENTITY,)) + RDFU_START_MAGIC,
+                bytes((target_entity,)) + RDFU_START_MAGIC,
                 software=RDFU_SOFTWARE_ID,
                 match=False,
                 drain=True,
@@ -522,7 +575,7 @@ def main():
                 PROTOCOL_BYTE_ORDER,
             )
             if not (
-                start_entity == TARGET_APPLICATION_ENTITY
+                start_entity == target_entity
                 and start_status == RDFU_DATA_TRANSFER_READY
                 and start_block == RDFU_INITIAL_BLOCK
             ):
@@ -548,7 +601,7 @@ def main():
                 PROTOCOL_BYTE_ORDER,
             )
             if not (
-                block_zero_entity == TARGET_APPLICATION_ENTITY
+                block_zero_entity == target_entity
                 and block_zero_status == RDFU_DATA_TRANSFER_READY
                 and next_block == RDFU_EXPECTED_BLOCK
             ):
@@ -557,7 +610,7 @@ def main():
                     f"{block_zero_reply.hex()}"
                 )
 
-        for number, packet in enumerate(PACKETS, FIRST_PACKET_NUMBER):
+        for number, packet in enumerate(packets, FIRST_PACKET_NUMBER):
             reply = exchange(
                 device,
                 rdfu,
@@ -572,7 +625,7 @@ def main():
             reply_status = reply[RDFU_REPLY_STATUS_BYTE]
             reply_ack = int.from_bytes(reply[RDFU_REPLY_ACK], PROTOCOL_BYTE_ORDER)
             if not (
-                reply_entity == TARGET_APPLICATION_ENTITY
+                reply_entity == target_entity
                 and reply_status == RDFU_PACKET_ACK
                 and reply_ack == number
             ):
@@ -588,13 +641,13 @@ def main():
         # setConfig returns immediately, so the HITS worker could still be running cleanup
         # we poll until it finishes or the normal req timeout expires
         cleanup_deadline = time.monotonic() + REQUEST_TIMEOUT_SECONDS
-        expected_status = bytes((TARGET_APPLICATION_ENTITY, RDFU_DFU_NOT_STARTED))
+        expected_status = bytes((target_entity, RDFU_DFU_NOT_STARTED))
         while True:
             cleanup_status = exchange(
                 device,
                 rdfu,
                 RDFU_GET_STATUS,
-                bytes((TARGET_APPLICATION_ENTITY,)),
+                bytes((target_entity,)),
                 software=RDFU_SOFTWARE_ID,
                 match=False,
             )
